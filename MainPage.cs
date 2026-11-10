@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text;
 using CommunityToolkit.Maui.Storage;
 using CriFsV2Lib;
 using CriFsV2Lib.Definitions;
@@ -42,7 +43,7 @@ public class MainPage : ContentPage
                     _status,
                     _fileList,
                     _extractButton,
-                    new Label { Text = "Les fichiers extraits seront regroupés dans un ZIP pour faciliter leur enregistrement sur Android.", FontSize = 12, TextColor = Color.FromArgb("#8792A5") }
+                    new Label { Text = "Le ZIP contiendra les fichiers extraits et un rapport détaillé (tailles, réussites et erreurs).", FontSize = 12, TextColor = Color.FromArgb("#8792A5") }
                 }
             }
         };
@@ -89,7 +90,7 @@ public class MainPage : ContentPage
                 return string.IsNullOrEmpty(folder) ? f.FileName : $"{folder}/{f.FileName}";
             });
             _fileList.Text = string.Join("\n", preview) + (_files.Length > 120 ? $"\n… et {_files.Length - 120} autres fichiers" : "");
-            _status.Text = $"Archive chargée : {_files.Length:N0} fichier(s).";
+            _status.Text = $"Archive chargée : {_files.Length:N0} fichier(s). Taille CPK : {FormatBytes(new FileInfo(localPath).Length)}.";
             _extractButton.IsEnabled = _files.Length > 0;
         }
         catch (Exception ex)
@@ -115,6 +116,12 @@ public class MainPage : ContentPage
             _pickButton.IsEnabled = false;
             _status.Text = "Extraction en cours…";
 
+            long totalExtractedBytes = 0;
+            var successCount = 0;
+            var errors = new List<string>();
+            var report = new StringBuilder();
+            var cpkSize = new FileInfo(_cpkPath).Length;
+
             zipPath = Path.Combine(FileSystem.CacheDirectory, $"CPK_Extracted_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
             using (var input = File.OpenRead(_cpkPath))
             using (var reader = CriFsLib.Instance.CreateCpkReader(input, false))
@@ -127,25 +134,57 @@ public class MainPage : ContentPage
                     var folder = (file.Directory ?? "").Replace('\\', '/').Trim('/');
                     var relative = string.IsNullOrWhiteSpace(folder) ? file.FileName : $"{folder}/{file.FileName}";
                     relative = SafeZipPath(relative);
-                    var entry = archive.CreateEntry(relative, CompressionLevel.NoCompression);
-                    using (var entryStream = entry.Open())
-                    using (var data = reader.ExtractFile(file))
-                        entryStream.Write(data.Span);
 
-                    if (i % 10 == 0 || i == _files.Length - 1)
+                    try
+                    {
+                        using var data = reader.ExtractFile(file);
+                        var entry = archive.CreateEntry(relative, CompressionLevel.NoCompression);
+                        using (var entryStream = entry.Open())
+                            entryStream.Write(data.Span);
+
+                        totalExtractedBytes += data.Length;
+                        successCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"{relative} : {ex.GetType().Name} - {ex.Message}");
+                    }
+
+                    if (i % 5 == 0 || i == _files.Length - 1)
                     {
                         var progress = (i + 1) * 100 / _files.Length;
-                        _status.Text = $"Extraction : {progress}% ({i + 1:N0}/{_files.Length:N0})";
+                        _status.Text = $"Extraction : {progress}% ({i + 1:N0}/{_files.Length:N0}) — {FormatBytes(totalExtractedBytes)}";
                         await Task.Yield();
                     }
                 }
+
+                report.AppendLine("CPK EXTRACTOR - RAPPORT D'EXTRACTION");
+                report.AppendLine($"Taille du CPK sélectionné : {FormatBytes(cpkSize)} ({cpkSize} octets)");
+                report.AppendLine($"Fichiers détectés dans le CPK : {_files.Length}");
+                report.AppendLine($"Fichiers extraits avec succès : {successCount}");
+                report.AppendLine($"Fichiers en erreur : {errors.Count}");
+                report.AppendLine($"Taille totale des données extraites : {FormatBytes(totalExtractedBytes)} ({totalExtractedBytes} octets)");
+                report.AppendLine();
+                report.AppendLine("DÉTAIL DES ERREURS");
+                if (errors.Count == 0)
+                    report.AppendLine("Aucune erreur signalée par la bibliothèque pendant l'extraction.");
+                else
+                    foreach (var error in errors)
+                        report.AppendLine(error);
+
+                var reportEntry = archive.CreateEntry("CPK_extraction_report.txt", CompressionLevel.Optimal);
+                using var reportWriter = new StreamWriter(reportEntry.Open(), Encoding.UTF8);
+                reportWriter.Write(report.ToString());
             }
+
+            var zipSize = new FileInfo(zipPath).Length;
+            _status.Text = $"Extraction terminée : {successCount}/{_files.Length} fichiers. Données extraites : {FormatBytes(totalExtractedBytes)}. ZIP : {FormatBytes(zipSize)}. Erreurs : {errors.Count}.";
 
             await using var zipStream = File.OpenRead(zipPath);
             var result = await FileSaver.Default.SaveAsync(Path.GetFileName(zipPath), zipStream, CancellationToken.None);
-            _status.Text = result.IsSuccessful
-                ? $"Terminé ! ZIP enregistré : {result.FilePath}"
-                : $"Enregistrement annulé ou échoué : {result.Exception?.Message ?? "aucun détail"}";
+            _status.Text += result.IsSuccessful
+                ? $" Enregistré : {result.FilePath}"
+                : $" Enregistrement annulé/échoué : {result.Exception?.Message ?? "aucun détail"}";
         }
         catch (Exception ex)
         {
@@ -160,6 +199,19 @@ public class MainPage : ContentPage
                 try { File.Delete(zipPath); } catch { }
             }
         }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = { "o", "Ko", "Mo", "Go", "To" };
+        double size = bytes;
+        var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+        return $"{size:0.##} {units[unit]}";
     }
 
     private static string SafeZipPath(string path)
