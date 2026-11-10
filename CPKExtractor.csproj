@@ -15,6 +15,10 @@
     <AndroidPackageFormat>apk</AndroidPackageFormat>
   </PropertyGroup>
   <ItemGroup>
+    <MauiIcon Include="Resources/AppIcon/appicon.svg" ForegroundFile="Resources/AppIcon/appiconfg.svg" Color="#315CDB" />
+    <MauiSplashScreen Include="Resources/Splash/splash.svg" Color="#10141D" BaseSize="128,128" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="CriFsV2Lib" Version="2.1.2" />
     <PackageReference Include="CommunityToolkit.Maui" Version="9.1.1" />
   </ItemGroup>
